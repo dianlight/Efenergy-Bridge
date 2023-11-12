@@ -1,3 +1,4 @@
+#include "Version.h"
 #include <Arduino.h>
 #include "log.h"
 
@@ -11,7 +12,11 @@
 #include <ESPmDNS.h>
 #include <Ticker.h>
 #include <PubSubClient.h>
+#include <DictionaryDeclarations.h>
 
+#define DATATOPIC "%s/sensors/%s/state"
+
+#include "discoveryMapping.h"
 
 //#define LOCAL_DEBUG       true  //false
 
@@ -20,17 +25,16 @@ DNSServer dns;
 WiFiClient espClient;
 PubSubClient mqttClient(espClient);
 Ticker mqttReconnectTimer;
-
-
+Ticker mqttAutodiscovery;
 
 const char *hostname = "efergybridge";
-const char *datapath = "%s/sensors/%s/state";
-const char *discoverypath = "homeassistant/sensor/%s/%s/config";
 
 #define DATAPATH(buffer, id)                                     \
-  char buffer[strlen(datapath) + strlen(hostname) + strlen(id)]; \
-  sprintf(buffer, datapath, hostname, id);
-#define DISCOVERYPATH(buffer,id)  char buffer[strlen(discoverypath)+strlen(hostname)+strlen(id)]; sprintf(buffer,discoverypath,hostname,id); 
+  char buffer[strlen(DATATOPIC) + strlen(hostname) + strlen(id)]; \
+  sprintf(buffer, DATATOPIC, hostname, id);
+#define DISCOVERYPATH(buffer,id,suffix)  \
+  char buffer[strlen(DISCOVERYTOPIC)+strlen(hostname)+strlen(id)+strlen(suffix)];  \
+  sprintf(buffer,DISCOVERYTOPIC,hostname,id,suffix); 
 
 #ifndef RF_MODULE_FREQUENCY
 #  define RF_MODULE_FREQUENCY 433.54 // 433.92 
@@ -49,6 +53,18 @@ char messageBuffer[JSON_MSG_BUFFER];
 
 rtl_433_ESP rf; // use -1 to disable transmitter
 
+Dictionary  *devicemap = new Dictionary(); 
+
+void autodiscoveryToMqtt(){
+  WebSerial.println("Autodiscovery!....");
+  int cnt = devicemap->count();
+  for (int i=0; i < cnt; i++) {
+    WebSerial.printf("\n%s : %s\n",devicemap->key(i).c_str(), devicemap->value(i).c_str());
+    if(!mqttClient.publish(devicemap->key(i).c_str(), devicemap->value(i).c_str(), true)){
+      WebSerial.printf("E: MQTT %u/%u\n",strlen(devicemap->value(i).c_str()),mqttClient.getBufferSize());
+    };
+  }
+}
 
 void connectToMqtt() {
   if(!mqttClient.connected()){
@@ -59,6 +75,9 @@ void connectToMqtt() {
     mqttReconnectTimer.once(2, connectToMqtt);
   } else {
     mqttReconnectTimer.once(10, connectToMqtt);
+    if(!mqttAutodiscovery.active()){
+      mqttAutodiscovery.attach(60, autodiscoveryToMqtt);
+    }
   }
 }
 
@@ -73,15 +92,23 @@ void recvMsg(uint8_t *data, size_t len){
 
   switch(data[0]){
     case 'h':
-      WebSerial.printf("* Help %u\n",COMPILE_TIME);
+      WebSerial.println("* Help\n");
       WebSerial.println("i = info");
       WebSerial.println("r = restart");
       WebSerial.println("c = reset MQTT connection");
-    break;
+      WebSerial.println("l = List of dicovered devices");
+      break;
     case 'i':
     case 'I':
       WebSerial.println("* Software");
-      WebSerial.printf("Version %u\n",COMPILE_TIME);
+      WebSerial.printf("Version: %s (%s)\n", VERSION, BUILD_TIMESTAMP);
+      WebSerial.printf("Compile: %u\n", COMPILE_TIME);
+      WebSerial.printf("Flash(Sketch/Total): %u/%u\n", ESP.getSketchSize(), ESP.getFlashChipSize());
+      WebSerial.printf("Heap (Free/Total): %u/%u\n", ESP.getFreeHeap(), ESP.getHeapSize());
+      WebSerial.printf("PSRAM (Free/Total): %u/%u\n", ESP.getFreePsram(),ESP.getPsramSize());
+
+      WebSerial.println("* Devices");
+      WebSerial.printf("Unique: %u\n", devicemap->count());      
 
       WebSerial.println("* Network");
       WebSerial.printf("IP %s\n",WiFi.localIP().toString());
@@ -101,9 +128,10 @@ void recvMsg(uint8_t *data, size_t len){
       WebSerial.println("* MQTT");
       WebSerial.printf("Status: %s\n",mqttClient.connected()?"Connected":"Disconnected");
       WebSerial.printf("State: %d\n",mqttClient.state());
+      WebSerial.printf("Buffer Size: %u\n", mqttClient.getBufferSize());
 
-       WebSerial.println();
-    break;
+      WebSerial.println();
+      break;
     case 'r':
     case 'R':
       WebSerial.println("Restart in 5sec!");
@@ -114,9 +142,16 @@ void recvMsg(uint8_t *data, size_t len){
     case 'C':
       mqttClient.disconnect();
       break;
+    case 'l':
+    case 'L':
+      {
+        WebSerial.println("* Device List");
+        WebSerial.println(devicemap->json());
+        break;
+      }
     default:
       WebSerial.printf("Unknown cmd '%c'\n",char(data[0]));
-    break;
+      break;
   }
 
   //rf.getModuleStatus();
@@ -152,20 +187,50 @@ void publishJson(JsonObject& jsondata,char *topic) {
 void rtl_433_Callback(char* message) {
   DynamicJsonBuffer jsonBuffer2(JSON_MSG_BUFFER);
   JsonObject& RFrtl_433_ESPdata = jsonBuffer2.parseObject(message);
-  if(strcmp(RFrtl_433_ESPdata["model"],"undecoded signal") == 0){
-    //WebSerial.print(".");
-    DATAPATH(topic,"failed");
-    publishJson(RFrtl_433_ESPdata, topic);
-  } else {
-    WebSerial.print("+");
+  if(RFrtl_433_ESPdata.containsKey("id")){
+    /* Data Sensor Enrichment*/
     if(strcmp(RFrtl_433_ESPdata["protocol"],"Efergy e2 classic") == 0) {
-      if(RFrtl_433_ESPdata["current"].is<double>()) RFrtl_433_ESPdata["watts"] = RFrtl_433_ESPdata["current"].as<double>() * 220.0; 
+      if(RFrtl_433_ESPdata["current"].is<double>()) {
+        RFrtl_433_ESPdata["current_A"] = RFrtl_433_ESPdata["current"].as<double>(); 
+        RFrtl_433_ESPdata["power_W"] = RFrtl_433_ESPdata["current"].as<double>() * 220.0; 
+        RFrtl_433_ESPdata["voltage_V"] = 220.0;
+        RFrtl_433_ESPdata.remove("current");
+      }
     }
-    DATAPATH(topic,RFrtl_433_ESPdata["id"].as<String>().c_str());
+
+    DATAPATH(topic, RFrtl_433_ESPdata["id"].as<String>().c_str());
     publishJson(RFrtl_433_ESPdata, topic);
+
+    for (JsonPair kv : RFrtl_433_ESPdata)
+    {
+      if (discoveryConfigMap.find(kv.key) != discoveryConfigMap.end())
+      {
+        DISCOVERYMESSAGE(jsonString, RFrtl_433_ESPdata["id"].as<String>().c_str(), kv.key,RFrtl_433_ESPdata["model"].as<String>().c_str(),RFrtl_433_ESPdata["protocol"].as<String>().c_str());
+        DISCOVERYPATH(path, RFrtl_433_ESPdata["id"].as<String>().c_str(),discoveryConfigMap[kv.key].object_suffix);
+        //WebSerial.printf("%s:%s",path,jsonString);
+        if(devicemap->insert(path, jsonString) != DICTIONARY_OK){
+          WebSerial.printf("E: Invalid Message k:%u/%u v:%u/%u\n", sizeof(path), _DICT_KEYLEN, sizeof(jsonString), _DICT_VALLEN);
+        };
+      }
+    }
+
+    /*     if(devicemap->search(RFrtl_433_ESPdata["id"].as<String>().c_str()).isEmpty()){
+          WebSerial.print("+");
+          char* id = (char *)malloc(strlen(RFrtl_433_ESPdata["id"].as<String>().c_str()));
+          char* protocol = (char *)malloc(strlen(RFrtl_433_ESPdata["protocol"].as<char *>()));
+
+          strcpy(id, RFrtl_433_ESPdata["id"].as<String>().c_str());
+          strcpy(protocol, RFrtl_433_ESPdata["protocol"].as<char *>());
+
+          devicemap->insert(id,protocol);
+        }
+     */
+  } else {
+    WebSerial.print('.');
+    //  DATAPATH(topic,"failed");
+    //  publishJson(RFrtl_433_ESPdata, topic);
   }
 }
-
 
 void WiFiEvent(WiFiEvent_t event){
   //  Serial.printf("[WiFi-event] event: %d\n", event);
@@ -179,6 +244,7 @@ void WiFiEvent(WiFiEvent_t event){
             break;
         case ARDUINO_EVENT_WIFI_STA_LOST_IP:
             mqttReconnectTimer.detach(); // ensure we don't reconnect to MQTT while reconnecting to Wi-Fi
+            mqttAutodiscovery.detach();
             break;
           default: break;
     }
@@ -189,6 +255,7 @@ void setup() {
   WiFi.onEvent(WiFiEvent);
 
   mqttClient.setServer(MQTT_HOST, MQTT_PORT);
+  mqttClient.setBufferSize(1024);
 
   AsyncWiFiManager wifiManager(&server,&dns);
   wifiManager.autoConnect();
@@ -223,19 +290,20 @@ void setup() {
       //Serial.println("Start updating " + type);
       WebSerial.println("Start updating " + type);
       rf.disableReceiver();
-      mqttReconnectTimer.detach(); })
+      mqttReconnectTimer.detach();
+      mqttAutodiscovery.detach();
+       })
       .onEnd([]()
              {
      // Serial.println("\nEnd");
       WebSerial.println("\nEND"); })
       .onProgress([](unsigned int progress, unsigned int total)
-              {
+                  {
         static uint8_t prct = 0xFF;
         if( (progress / (total / 100)) != prct ){
           prct = progress / (total / 100);
           if(prct % 5 == 0)WebSerial.printf("Progress: %u%%\r",prct); 
-        }
-              })
+        } })
       .onError([](ota_error_t error)
                {
       //Serial.printf("Error[%u]: ", error);
