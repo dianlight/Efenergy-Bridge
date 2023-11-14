@@ -30,8 +30,8 @@ struct discoveryDevice {
      sprintf(buffer,discoveryConfigMap[field].configTemplate,hostname,id,id,discoveryConfigMap[field].object_suffix,model,protocol,id); 
 
 /* Original Source https://github.com/merbanan/rtl_433/blob/master/examples/rtl_433_mqtt_hass.py */
-std::map<String, discoveryDevice>discoveryConfigMap = {
-    {"temperature_C", {
+std::map<String, discoveryDevice>discoveryConfigMap PROGMEM = {
+/*     {"temperature_C", {
         .device_type="sensor",
         .object_suffix="T", 
         .configTemplate=
@@ -42,7 +42,7 @@ std::map<String, discoveryDevice>discoveryConfigMap = {
             "\"val_tpl\": \"{{ value_json.temperature_C|float|round(1) }}\","
             "\"stat_cla\": \"measurement\"" 
             JSON_END                  
-    }}, 
+    }},  */
 
     {"battery_ok", {
         .device_type= "sensor",
@@ -84,7 +84,7 @@ std::map<String, discoveryDevice>discoveryConfigMap = {
             JSON_END                  
     }},
 
-    {"energy_kWh", {
+/*     {"energy_kWh", {
         .device_type= "sensor",
         .object_suffix= "kwh",
         .configTemplate=
@@ -95,7 +95,7 @@ std::map<String, discoveryDevice>discoveryConfigMap = {
             "\"val_tpl\": \"{{ value_json.energy_kWh|float }}\","
             "\"stat_cla\": \"measurement\""
             JSON_END                  
-    }},
+    }}, */
 
     {"current_A", {
         .device_type= "sensor",

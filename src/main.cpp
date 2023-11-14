@@ -1,7 +1,7 @@
 #include "Version.h"
 #include <Arduino.h>
-#include "log.h"
-
+//#include <FS.h>  
+//#include <SPIFFS.h>
 #include <ArduinoJson.h>
 #include <rtl_433_ESP.h>
 #include <ESPAsyncWebServer.h>
@@ -17,8 +17,6 @@
 #define DATATOPIC "%s/sensors/%s/state"
 
 #include "discoveryMapping.h"
-
-//#define LOCAL_DEBUG       true  //false
 
 AsyncWebServer server(80);
 DNSServer dns;
@@ -56,21 +54,37 @@ rtl_433_ESP rf; // use -1 to disable transmitter
 Dictionary  *devicemap = new Dictionary(); 
 
 void autodiscoveryToMqtt(){
-  WebSerial.println("Autodiscovery!....");
+  WebSerial.println(">DSK!");
   int cnt = devicemap->count();
-  for (int i=0; i < cnt; i++) {
-    WebSerial.printf("\n%s : %s\n",devicemap->key(i).c_str(), devicemap->value(i).c_str());
+  for (int i = 0; i < cnt; i++)
+  {
+    //WebSerial.printf("\n%s : %s\n",devicemap->key(i).c_str(), devicemap->value(i).c_str());
+    WebSerial.printf("\n%s : %u\n",devicemap->key(i).c_str(), devicemap->value(i).length());
     if(!mqttClient.publish(devicemap->key(i).c_str(), devicemap->value(i).c_str(), true)){
-      WebSerial.printf("E: MQTT %u/%u\n",strlen(devicemap->value(i).c_str()),mqttClient.getBufferSize());
-    };
+      WebSerial.printf("E: MQTT %u/%u\n",devicemap->value(i).length(),mqttClient.getBufferSize());
+    } else if(devicemap->value(i).length() > 0){
+      WebSerial.printf("B:%s", devicemap->key(i).c_str());
+      devicemap->insert(devicemap->key(i).c_str(), "");
+    }
+    else
+    {
+      WebSerial.printf("R:%s", devicemap->key(i).c_str());
+      devicemap->remove(devicemap->key(i).c_str());
+    }
   }
+  if(cnt != 0 && devicemap->count() == 0){
+    WebSerial.println("No data for 120sec. Reset...");
+//    delay(5000);
+//  //  ESP.restart();
+  }
+  WebSerial.println("<DSK!");
 }
 
 void connectToMqtt() {
   if(!mqttClient.connected()){
-    WebSerial.println("Connecting to MQTT...");
+    WebSerial.println("Con to MQTT...");
     if(!mqttClient.connect(hostname,MQTT_USER,MQTT_PASSWORD)){
-      WebSerial.printf("E:Connectiong %d\n", mqttClient.state());
+      WebSerial.printf("E:Con %d\n", mqttClient.state());
     }
     mqttReconnectTimer.once(2, connectToMqtt);
   } else {
@@ -95,17 +109,18 @@ void recvMsg(uint8_t *data, size_t len){
       WebSerial.println("* Help\n");
       WebSerial.println("i = info");
       WebSerial.println("r = restart");
-      WebSerial.println("c = reset MQTT connection");
-      WebSerial.println("l = List of dicovered devices");
+      WebSerial.println("c = reset MQTT");
+      WebSerial.println("l = List devices");
       break;
     case 'i':
     case 'I':
       WebSerial.println("* Software");
-      WebSerial.printf("Version: %s (%s)\n", VERSION, BUILD_TIMESTAMP);
-      WebSerial.printf("Compile: %u\n", COMPILE_TIME);
-      WebSerial.printf("Flash(Sketch/Total): %u/%u\n", ESP.getSketchSize(), ESP.getFlashChipSize());
-      WebSerial.printf("Heap (Free/Total): %u/%u\n", ESP.getFreeHeap(), ESP.getHeapSize());
-      WebSerial.printf("PSRAM (Free/Total): %u/%u\n", ESP.getFreePsram(),ESP.getPsramSize());
+      WebSerial.printf("Ver: %s (%s)\n", VERSION, BUILD_TIMESTAMP);
+      WebSerial.printf("Flash (Sketch/T): %u/%u\n", ESP.getSketchSize(), ESP.getFlashChipSize());
+      WebSerial.printf("Heap (Free/T): %u/%u\n", ESP.getFreeHeap(), ESP.getHeapSize());
+      WebSerial.printf("Uptime: %lu\n", millis());
+      // WebSerial.printf("PSRAM (Free/T): %u/%u\n", ESP.getFreePsram(),ESP.getPsramSize());
+      // WebSerial.printf("SPIFFS (Used/T): %u/%u\n", SPIFFS.usedBytes(), SPIFFS.totalBytes());
 
       WebSerial.println("* Devices");
       WebSerial.printf("Unique: %u\n", devicemap->count());      
@@ -115,26 +130,26 @@ void recvMsg(uint8_t *data, size_t len){
       WebSerial.printf("RSSI %d\n",WiFi.RSSI());
 
       WebSerial.println("* SX1278");
-      WebSerial.printf("Modulation: %s\n", rf.ookModulation ? "OOK" : "FSK");
-      WebSerial.printf("Frequency: %.2fMhz\n", RF_MODULE_FREQUENCY);
-      WebSerial.printf("Signal RSSI: %d\n", rf.signalRssi);
-      WebSerial.printf("MessageCount: %d\n", rf.messageCount);
-      WebSerial.printf("TotalSignals: %d\n", rf.totalSignals);
-      WebSerial.printf("IgnoredSignals: %d\n", rf.ignoredSignals);
-      WebSerial.printf("UnparsedSignals: %d\n", rf.unparsedSignals);
+      WebSerial.printf("Mod: %s\n", rf.ookModulation ? "OOK" : "FSK");
+      WebSerial.printf("Freq: %.2fMhz\n", RF_MODULE_FREQUENCY);
+      WebSerial.printf("RSSI: %d\n", rf.signalRssi);
+      WebSerial.printf("MessCnt: %d\n", rf.messageCount);
+      WebSerial.printf("TotalSign: %d\n", rf.totalSignals);
+      WebSerial.printf("IgnoredSign: %d\n", rf.ignoredSignals);
+      WebSerial.printf("UnparsedSign: %d\n", rf.unparsedSignals);
       WebSerial.printf("CurrentRssi: %d\n", rf.currentRssi);
       WebSerial.printf("RssiThreshold: %d\n", rf.rssiThreshold);
 
       WebSerial.println("* MQTT");
-      WebSerial.printf("Status: %s\n",mqttClient.connected()?"Connected":"Disconnected");
-      WebSerial.printf("State: %d\n",mqttClient.state());
-      WebSerial.printf("Buffer Size: %u\n", mqttClient.getBufferSize());
+      //WebSerial.printf("Server: %s@%s:%u", MQTT_USER, MQTT_HOST, MQTT_PORT);
+      WebSerial.printf("Status: %s (%d) \n", mqttClient.connected() ? "Connected" : "Disconnected",mqttClient.state());
+      WebSerial.printf("Buffer: %u\n", mqttClient.getBufferSize());
 
       WebSerial.println();
       break;
     case 'r':
     case 'R':
-      WebSerial.println("Restart in 5sec!");
+      WebSerial.println("Rst in 5sec!");
       delay(5000);
       ESP.restart();
       break;
@@ -145,28 +160,27 @@ void recvMsg(uint8_t *data, size_t len){
     case 'l':
     case 'L':
       {
-        WebSerial.println("* Device List");
+        WebSerial.println("* Devices ");
         WebSerial.println(devicemap->json());
         break;
       }
     default:
-      WebSerial.printf("Unknown cmd '%c'\n",char(data[0]));
+      WebSerial.printf("Ukn cmd '%c'\n",char(data[0]));
       break;
   }
 
   //rf.getModuleStatus();
 }
 
-void publishJson(JsonObject& jsondata,char *topic) {
+void publishJson(JsonObject& jsondata,char *topic,bool persistent) {
 #if defined(ESP8266) || defined(ESP32) || defined(__AVR_ATmega2560__) || defined(__AVR_ATmega1280__)
   char JSONmessageBuffer[jsondata.measureLength() + 1];
 #else
   char JSONmessageBuffer[JSON_MSG_BUFFER];
 #endif
   jsondata.printTo(JSONmessageBuffer, sizeof(JSONmessageBuffer));
- // Log.notice(F("Received message : %s" CR), JSONmessageBuffer);
-  WebSerial.printf("\n%s : %s\n",topic, JSONmessageBuffer);
-  if(!mqttClient.publish(topic, JSONmessageBuffer, true)){
+  //WebSerial.printf("\n%s : %s\n",topic, JSONmessageBuffer);
+  if(!mqttClient.publish(topic, JSONmessageBuffer, persistent)){
     WebSerial.println("E: MQTT");
   };
 }
@@ -186,6 +200,7 @@ void publishJson(JsonObject& jsondata,char *topic) {
 */
 void rtl_433_Callback(char* message) {
   DynamicJsonBuffer jsonBuffer2(JSON_MSG_BUFFER);
+  //StaticJsonBuffer<JSON_MSG_BUFFER> jsonBuffer2;
   JsonObject& RFrtl_433_ESPdata = jsonBuffer2.parseObject(message);
   if(RFrtl_433_ESPdata.containsKey("id")){
     /* Data Sensor Enrichment*/
@@ -199,7 +214,8 @@ void rtl_433_Callback(char* message) {
     }
 
     DATAPATH(topic, RFrtl_433_ESPdata["id"].as<String>().c_str());
-    publishJson(RFrtl_433_ESPdata, topic);
+    WebSerial.print("°");
+    publishJson(RFrtl_433_ESPdata, topic,false);
 
     for (JsonPair kv : RFrtl_433_ESPdata)
     {
@@ -209,7 +225,7 @@ void rtl_433_Callback(char* message) {
         DISCOVERYPATH(path, RFrtl_433_ESPdata["id"].as<String>().c_str(),discoveryConfigMap[kv.key].object_suffix);
         //WebSerial.printf("%s:%s",path,jsonString);
         if(devicemap->insert(path, jsonString) != DICTIONARY_OK){
-          WebSerial.printf("E: Invalid Message k:%u/%u v:%u/%u\n", sizeof(path), _DICT_KEYLEN, sizeof(jsonString), _DICT_VALLEN);
+          WebSerial.printf("E: Mesg k:%u/%u v:%u/%u\n", sizeof(path), _DICT_KEYLEN, sizeof(jsonString), _DICT_VALLEN);
         };
       }
     }
@@ -228,7 +244,7 @@ void rtl_433_Callback(char* message) {
   } else {
     WebSerial.print('.');
     //  DATAPATH(topic,"failed");
-    //  publishJson(RFrtl_433_ESPdata, topic);
+    //  publishJson(RFrtl_433_ESPdata, topic,false);
   }
 }
 
@@ -252,6 +268,8 @@ void WiFiEvent(WiFiEvent_t event){
 
 void setup() {
   //Serial.begin(115200);
+  //SPIFFS.begin();
+
   WiFi.onEvent(WiFiEvent);
 
   mqttClient.setServer(MQTT_HOST, MQTT_PORT);
@@ -288,7 +306,7 @@ void setup() {
 
       // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
       //Serial.println("Start updating " + type);
-      WebSerial.println("Start updating " + type);
+      //WebSerial.println("Start updating " + type);
       rf.disableReceiver();
       mqttReconnectTimer.detach();
       mqttAutodiscovery.detach();
